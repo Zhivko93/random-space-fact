@@ -149,9 +149,12 @@ def fetch_summary(title: str) -> dict | None:
     if not extract:
         return None
 
+    wiki_url = data.get("content_urls", {}).get("desktop", {}).get("page")
+
     return {
         "title": data.get("title", title),
         "extract": extract,
+        "url": wiki_url,
     }
 
 
@@ -271,6 +274,7 @@ def find_fact(max_attempts: int = 30) -> tuple[str, str]:
 
         title = summary["title"]
         extract = summary["extract"]
+        wiki_url = summary.get("url")
 
         sentence, score = choose_best_sentence(extract, title)
         if not sentence:
@@ -278,7 +282,7 @@ def find_fact(max_attempts: int = 30) -> tuple[str, str]:
 
         # Strong hit: use immediately
         if score >= 8:
-            return title, sentence
+            return title, sentence, wiki_url
 
         if score > best_fallback_score:
             best_fallback = (title, sentence)
@@ -289,11 +293,15 @@ def find_fact(max_attempts: int = 30) -> tuple[str, str]:
 
     # Guaranteed final fallback
     fallback_choices = [item for item in FALLBACK_FACTS if item[0] != last_title] or FALLBACK_FACTS
-    return random.choice(fallback_choices)
+    title, fact = random.choice(fallback_choices)
+    return title, fact, None
 
 
-def send_to_discord(webhook_url: str, title: str, fact: str) -> None:
+def send_to_discord(webhook_url: str, title: str, fact: str, wiki_url: str | None) -> None:
     message = f"🌌 **Daily mind-blowing fact**\n\n{fact}\n\n*Source topic: {title}*"
+
+    if wiki_url:
+        message += f"\n🔗 {wiki_url}"
 
     response = requests.post(
         webhook_url,
@@ -307,8 +315,8 @@ def send_to_discord(webhook_url: str, title: str, fact: str) -> None:
 def main() -> None:
     webhook_url = get_env("DISCORD_FACTS_WEBHOOK_URL")
 
-    title, fact = find_fact()
-    send_to_discord(webhook_url, title, fact)
+    title, fact, wiki_url = find_fact()
+    send_to_discord(webhook_url, title, fact, wiki_url)
     save_last_title(title)
 
 
