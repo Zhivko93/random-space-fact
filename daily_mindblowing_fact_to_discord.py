@@ -113,7 +113,12 @@ FALLBACK_FACTS = [
     ),
 ]
 
-STATE_FILE = Path("last_fact_title.txt")
+LEGACY_STATE_FILE = Path("last_fact_title.txt")
+SENT_HISTORY_FILE = Path("sent_fact_history.txt")
+
+
+def normalize_topic(title: str) -> str:
+    return re.sub(r"\s+", " ", title.strip()).casefold()
 
 
 def get_env(name: str) -> str:
@@ -123,14 +128,39 @@ def get_env(name: str) -> str:
     return value
 
 
-def load_last_title() -> str | None:
-    if STATE_FILE.exists():
-        return STATE_FILE.read_text(encoding="utf-8").strip() or None
-    return None
+def load_sent_topics() -> set[str]:
+    sent_topics = set()
+
+    if SENT_HISTORY_FILE.exists():
+        for line in SENT_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+            title = line.strip()
+            if title and not title.startswith("#"):
+                sent_topics.add(normalize_topic(title))
+
+    if LEGACY_STATE_FILE.exists():
+        legacy_title = LEGACY_STATE_FILE.read_text(encoding="utf-8").strip()
+        if legacy_title:
+            sent_topics.add(normalize_topic(legacy_title))
+
+    return sent_topics
 
 
-def save_last_title(title: str) -> None:
-    STATE_FILE.write_text(title, encoding="utf-8")
+def save_sent_topic(title: str) -> None:
+    existing_titles = []
+    normalized_titles = set()
+
+    if SENT_HISTORY_FILE.exists():
+        for line in SENT_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+            existing_title = line.strip()
+            if existing_title and not existing_title.startswith("#"):
+                existing_titles.append(existing_title)
+                normalized_titles.add(normalize_topic(existing_title))
+
+    normalized_title = normalize_topic(title)
+    if normalized_title not in normalized_titles:
+        existing_titles.append(title)
+
+    SENT_HISTORY_FILE.write_text("\n".join(sorted(existing_titles, key=str.casefold)) + "\n", encoding="utf-8")
 
 
 def fetch_summary(title: str) -> dict | None:
@@ -251,28 +281,37 @@ def choose_best_sentence(extract: str, title: str) -> tuple[str | None, int]:
     return scored[0][1], scored[0][0]
 
 
-def pick_topic(last_title: str | None) -> str:
-    attempts = 0
-    while attempts < 20:
-        title = random.choice(WEIGHTED_TOPICS)
-        if title != last_title:
-            return title
-        attempts += 1
-    return random.choice(WEIGHTED_TOPICS)
+def available_weighted_topics(sent_topics: set[str]) -> list[str]:
+    return [topic for topic in WEIGHTED_TOPICS if normalize_topic(topic) not in sent_topics]
 
 
-def find_fact(max_attempts: int = 30) -> tuple[str, str]:
-    last_title = load_last_title()
+def pick_topic(sent_topics: set[str]) -> str | None:
+    choices = available_weighted_topics(sent_topics)
+    if not choices:
+        return None
+    return random.choice(choices)
+
+
+def find_fact(max_attempts: int = 30) -> tuple[str, str, str | None]:
+    sent_topics = load_sent_topics()
     best_fallback = None
     best_fallback_score = -1
+    attempted_topics = set()
 
     for _ in range(max_attempts):
-        topic = pick_topic(last_title)
+        topic = pick_topic(sent_topics | attempted_topics)
+        if not topic:
+            break
+        attempted_topics.add(normalize_topic(topic))
+
         summary = fetch_summary(topic)
         if not summary:
             continue
 
         title = summary["title"]
+        if normalize_topic(title) in sent_topics:
+            continue
+
         extract = summary["extract"]
         wiki_url = summary.get("url")
 
@@ -285,14 +324,19 @@ def find_fact(max_attempts: int = 30) -> tuple[str, str]:
             return title, sentence, wiki_url
 
         if score > best_fallback_score:
-            best_fallback = (title, sentence)
+            best_fallback = (title, sentence, wiki_url)
             best_fallback_score = score
 
     if best_fallback:
         return best_fallback
 
-    # Guaranteed final fallback
-    fallback_choices = [item for item in FALLBACK_FACTS if item[0] != last_title] or FALLBACK_FACTS
+    fallback_choices = [
+        item for item in FALLBACK_FACTS
+        if normalize_topic(item[0]) not in sent_topics
+    ]
+    if not fallback_choices:
+        raise RuntimeError("No unsent fact topics remain.")
+
     title, fact = random.choice(fallback_choices)
     return title, fact, None
 
@@ -317,7 +361,7 @@ def main() -> None:
 
     title, fact, wiki_url = find_fact()
     send_to_discord(webhook_url, title, fact, wiki_url)
-    save_last_title(title)
+    save_sent_topic(title)
 
 
 if __name__ == "__main__":
