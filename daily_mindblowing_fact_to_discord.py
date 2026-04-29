@@ -1,124 +1,36 @@
 import os
 import random
 import re
+from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 
-WIKI_SUMMARY_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
-
-# Weighted toward space, physics, Earth extremes, and humanity
-WEIGHTED_TOPICS = [
-    "Black hole", "Black hole", "Black hole",
-    "Neutron star", "Neutron star",
-    "Supernova", "Supernova",
-    "Milky Way", "Andromeda Galaxy", "Galaxy",
-    "Observable universe", "Observable universe",
-    "Exoplanet", "Exoplanet",
-    "Sun", "Mars", "Jupiter", "Saturn",
-    "Solar System", "Asteroid belt",
-    "Quasar", "Pulsar", "Magnetar",
-    "General relativity", "Quantum mechanics",
-    "Speed of light", "Gravity", "Dark matter",
-    "Earth", "Earthquake", "Volcano", "Plate tectonics",
-    "Yellowstone Caldera", "Toba catastrophe theory",
-    "Mount Everest", "Mariana Trench",
-    "Atmosphere of Earth", "Aurora",
-    "Human evolution", "Homo sapiens", "Neanderthal",
-]
-
-PRIMARY_KEYWORDS = [
-    "largest",
-    "smallest",
-    "millions",
-    "billions",
-    "light-years",
-    "black hole",
-    "faster than",
-]
-
-BONUS_TERMS = [
-    "universe",
-    "star",
-    "galaxy",
-    "planet",
-    "cosmic",
-    "neutron",
-    "supernova",
-    "singularity",
-    "gravity",
-    "volcano",
-    "earthquake",
-    "massive",
-    "extreme",
-    "giant",
-    "oldest",
-    "youngest",
-    "dense",
-    "speed",
-    "temperature",
-    "deepest",
-    "highest",
-    "solar",
-    "lunar",
-    "orbit",
-    "asteroid",
-    "comet",
-    "quasar",
-    "magnetic",
-    "atmosphere",
-    "evolution",
-    "extinct",
-    "collapse",
-    "explosion",
-    "radiation",
-    "core",
-    "ice giant",
-]
-
-# Guaranteed fallback facts so the automation never dies on a bad day
-FALLBACK_FACTS = [
-    (
-        "Neutron star",
-        "A teaspoon of neutron star matter would weigh billions of tons on Earth."
-    ),
-    (
-        "Observable universe",
-        "The observable universe is about 93 billion light-years in diameter, even though it is only about 13.8 billion years old."
-    ),
-    (
-        "Black hole",
-        "Near a black hole, gravity is so extreme that time passes more slowly compared with farther-away observers."
-    ),
-    (
-        "Mariana Trench",
-        "The Mariana Trench is so deep that if Mount Everest were placed inside it, the summit would still be underwater."
-    ),
-    (
-        "Supernova",
-        "A supernova can briefly outshine an entire galaxy."
-    ),
-    (
-        "Human evolution",
-        "Modern humans shared the Earth with other human species, including Neanderthals."
-    ),
-    (
-        "Lightning",
-        "Lightning can heat the air to temperatures hotter than the surface of the Sun."
-    ),
-    (
-        "Venus",
-        "A day on Venus is longer than a year on Venus."
-    ),
-]
-
-LEGACY_STATE_FILE = Path("last_fact_title.txt")
+NASA_APOD_API = "https://api.nasa.gov/planetary/apod"
+APOD_START_DATE = date(1995, 6, 16)
 SENT_HISTORY_FILE = Path("sent_fact_history.txt")
+MAX_APOD_ATTEMPTS = 20
 
-
-def normalize_topic(title: str) -> str:
-    return re.sub(r"\s+", " ", title.strip()).casefold()
+FALLBACK_FACTS = [
+    {
+        "id": "fallback:neutron-star-density",
+        "title": "Neutron star",
+        "fact": "A teaspoon of neutron star matter would weigh billions of tons on Earth.",
+        "url": "https://science.nasa.gov/universe/stars/neutron-stars/",
+    },
+    {
+        "id": "fallback:venus-day-year",
+        "title": "Venus",
+        "fact": "A day on Venus is longer than a year on Venus.",
+        "url": "https://science.nasa.gov/venus/",
+    },
+    {
+        "id": "fallback:supernova-brightness",
+        "title": "Supernova",
+        "fact": "A supernova can briefly outshine an entire galaxy.",
+        "url": "https://science.nasa.gov/universe/stars/supernovae/",
+    },
+]
 
 
 def get_env(name: str) -> str:
@@ -128,64 +40,63 @@ def get_env(name: str) -> str:
     return value
 
 
-def load_sent_topics() -> set[str]:
-    sent_topics = set()
+def get_optional_env(name: str, default: str) -> str:
+    return os.environ.get(name, default).strip() or default
+
+
+def load_sent_ids() -> set[str]:
+    sent_ids = set()
+    if not SENT_HISTORY_FILE.exists():
+        return sent_ids
+
+    for line in SENT_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+        item = line.strip()
+        if item and not item.startswith("#"):
+            sent_ids.add(item.casefold())
+
+    return sent_ids
+
+
+def save_sent_id(sent_id: str) -> None:
+    existing_ids = []
+    normalized_ids = set()
 
     if SENT_HISTORY_FILE.exists():
         for line in SENT_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
-            title = line.strip()
-            if title and not title.startswith("#"):
-                sent_topics.add(normalize_topic(title))
+            item = line.strip()
+            if item and not item.startswith("#"):
+                existing_ids.append(item)
+                normalized_ids.add(item.casefold())
 
-    if LEGACY_STATE_FILE.exists():
-        legacy_title = LEGACY_STATE_FILE.read_text(encoding="utf-8").strip()
-        if legacy_title:
-            sent_topics.add(normalize_topic(legacy_title))
+    if sent_id.casefold() not in normalized_ids:
+        existing_ids.append(sent_id)
 
-    return sent_topics
-
-
-def save_sent_topic(title: str) -> None:
-    existing_titles = []
-    normalized_titles = set()
-
-    if SENT_HISTORY_FILE.exists():
-        for line in SENT_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
-            existing_title = line.strip()
-            if existing_title and not existing_title.startswith("#"):
-                existing_titles.append(existing_title)
-                normalized_titles.add(normalize_topic(existing_title))
-
-    normalized_title = normalize_topic(title)
-    if normalized_title not in normalized_titles:
-        existing_titles.append(title)
-
-    SENT_HISTORY_FILE.write_text("\n".join(sorted(existing_titles, key=str.casefold)) + "\n", encoding="utf-8")
+    SENT_HISTORY_FILE.write_text("\n".join(sorted(existing_ids, key=str.casefold)) + "\n", encoding="utf-8")
 
 
-def fetch_summary(title: str) -> dict | None:
-    url = WIKI_SUMMARY_API + quote(title, safe="")
+def random_apod_date() -> str:
+    latest = date.today() - timedelta(days=1)
+    days = (latest - APOD_START_DATE).days
+    return (APOD_START_DATE + timedelta(days=random.randint(0, days))).isoformat()
+
+
+def fetch_apod(apod_date: str, api_key: str) -> dict | None:
+    params = {
+        "api_key": api_key,
+        "date": apod_date,
+        "thumbs": "true",
+    }
     try:
-        response = requests.get(url, timeout=30, headers={"User-Agent": "daily-fact-bot/1.0"})
+        response = requests.get(NASA_APOD_API, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
     except Exception:
         return None
 
-    if data.get("type") == "disambiguation":
+    if not data.get("title") or not data.get("explanation"):
         return None
 
-    extract = data.get("extract", "").strip()
-    if not extract:
-        return None
-
-    wiki_url = data.get("content_urls", {}).get("desktop", {}).get("page")
-
-    return {
-        "title": data.get("title", title),
-        "extract": extract,
-        "url": wiki_url,
-    }
+    return data
 
 
 def clean_text(text: str) -> str:
@@ -197,155 +108,115 @@ def clean_text(text: str) -> str:
 
 def split_sentences(text: str) -> list[str]:
     parts = re.split(r"(?<=[.!?])\s+", text)
-    return [clean_text(p) for p in parts if clean_text(p)]
+    return [clean_text(part) for part in parts if clean_text(part)]
 
 
-def looks_bad(sentence: str) -> bool:
-    s = sentence.lower()
-
-    if len(sentence) < 35:
-        return True
-    if len(sentence) > 320:
-        return True
-
-    bad_contains = [
-        "may refer to",
-        "can refer to",
-        "is a surname",
-        "is a given name",
-        "may also refer to",
-        "disambiguation",
-        "is an american",
-        "is a british",
-        "is a canadian",
-    ]
-    if any(x in s for x in bad_contains):
-        return True
-
-    return False
-
-
-def sentence_score(sentence: str, title: str = "") -> int:
-    s = sentence.lower()
+def sentence_score(sentence: str) -> int:
+    lowered = sentence.lower()
     score = 0
 
-    for keyword in PRIMARY_KEYWORDS:
-        if keyword in s:
-            score += 8
+    punchy_terms = [
+        "billion",
+        "million",
+        "light-year",
+        "massive",
+        "giant",
+        "black hole",
+        "supernova",
+        "galaxy",
+        "nebula",
+        "star",
+        "planet",
+        "comet",
+        "asteroid",
+        "radiation",
+        "gravity",
+        "collision",
+        "explosion",
+        "largest",
+        "oldest",
+        "fastest",
+        "deepest",
+        "hottest",
+    ]
+    for term in punchy_terms:
+        if term in lowered:
+            score += 3
 
-    for term in BONUS_TERMS:
-        if term in s:
-            score += 2
-
-    if re.search(r"\b\d+\b", s):
+    if re.search(r"\b\d+([,.]\d+)?\b", lowered):
+        score += 4
+    if 80 <= len(sentence) <= 240:
         score += 3
-
-    if any(unit in s for unit in [
-        "million", "billions", "billion", "trillion",
-        "light-year", "light-years", "km", "miles",
-        "degrees", "tons", "years old", "diameter"
-    ]):
-        score += 3
-
-    title_lower = title.lower()
-    for term in ["black hole", "neutron", "galaxy", "planet", "earthquake", "volcano", "supernova"]:
-        if term in title_lower:
-            score += 2
-
-    # Slight boost for punchier statements
-    if "," in sentence:
-        score += 1
+    if len(sentence) > 300:
+        score -= 6
 
     return score
 
 
-def choose_best_sentence(extract: str, title: str) -> tuple[str | None, int]:
-    sentences = split_sentences(extract)
-    if not sentences:
-        return None, -1
+def best_fact_sentence(explanation: str) -> str:
+    candidates = [
+        sentence for sentence in split_sentences(explanation)
+        if 45 <= len(sentence) <= 320
+    ]
+    if not candidates:
+        return clean_text(explanation)[:300].rstrip()
 
-    scored = []
-    for sentence in sentences:
-        if looks_bad(sentence):
-            continue
-        scored.append((sentence_score(sentence, title), sentence))
-
-    if not scored:
-        # fallback to first decent sentence
-        for sentence in sentences:
-            if 35 <= len(sentence) <= 320:
-                return sentence, 0
-        return None, -1
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[0][1], scored[0][0]
+    candidates.sort(key=sentence_score, reverse=True)
+    return candidates[0]
 
 
-def available_weighted_topics(sent_topics: set[str]) -> list[str]:
-    return [topic for topic in WEIGHTED_TOPICS if normalize_topic(topic) not in sent_topics]
+def media_url(apod: dict) -> str | None:
+    if apod.get("media_type") == "image":
+        return apod.get("hdurl") or apod.get("url")
+    return apod.get("thumbnail_url") or apod.get("url")
 
 
-def pick_topic(sent_topics: set[str]) -> str | None:
-    choices = available_weighted_topics(sent_topics)
-    if not choices:
-        return None
-    return random.choice(choices)
+def find_fact() -> dict:
+    api_key = get_optional_env("NASA_API_KEY", "DEMO_KEY")
+    sent_ids = load_sent_ids()
 
-
-def find_fact(max_attempts: int = 30) -> tuple[str, str, str | None]:
-    sent_topics = load_sent_topics()
-    best_fallback = None
-    best_fallback_score = -1
-    attempted_topics = set()
-
-    for _ in range(max_attempts):
-        topic = pick_topic(sent_topics | attempted_topics)
-        if not topic:
-            break
-        attempted_topics.add(normalize_topic(topic))
-
-        summary = fetch_summary(topic)
-        if not summary:
+    for _ in range(MAX_APOD_ATTEMPTS):
+        apod_date = random_apod_date()
+        sent_id = f"apod:{apod_date}"
+        if sent_id.casefold() in sent_ids:
             continue
 
-        title = summary["title"]
-        if normalize_topic(title) in sent_topics:
+        apod = fetch_apod(apod_date, api_key)
+        if not apod:
             continue
 
-        extract = summary["extract"]
-        wiki_url = summary.get("url")
-
-        sentence, score = choose_best_sentence(extract, title)
-        if not sentence:
-            continue
-
-        # Strong hit: use immediately
-        if score >= 8:
-            return title, sentence, wiki_url
-
-        if score > best_fallback_score:
-            best_fallback = (title, sentence, wiki_url)
-            best_fallback_score = score
-
-    if best_fallback:
-        return best_fallback
+        return {
+            "id": sent_id,
+            "title": apod["title"],
+            "fact": best_fact_sentence(apod["explanation"]),
+            "url": apod.get("url"),
+            "media_url": media_url(apod),
+            "date": apod_date,
+        }
 
     fallback_choices = [
-        item for item in FALLBACK_FACTS
-        if normalize_topic(item[0]) not in sent_topics
+        fact for fact in FALLBACK_FACTS
+        if fact["id"].casefold() not in sent_ids
     ]
     if not fallback_choices:
-        raise RuntimeError("No unsent fact topics remain.")
+        raise RuntimeError("No unsent NASA APOD dates or fallback facts were available.")
 
-    title, fact = random.choice(fallback_choices)
-    return title, fact, None
+    return random.choice(fallback_choices)
 
 
-def send_to_discord(webhook_url: str, title: str, fact: str, wiki_url: str | None) -> None:
-    message = f"🌌 **Daily mind-blowing fact**\n\n{fact}\n\n*Source topic: {title}*"
+def send_to_discord(webhook_url: str, fact: dict) -> None:
+    message = (
+        f"🌌 **Daily NASA space fact**\n\n"
+        f"{fact['fact']}\n\n"
+        f"*Source: NASA APOD - {fact['title']}*"
+    )
 
-    if wiki_url:
-        message += f"\n🔗 {wiki_url}"
+    if fact.get("date"):
+        message += f"\n*APOD date: {fact['date']}*"
+    if fact.get("url"):
+        message += f"\n🔗 {fact['url']}"
+    if fact.get("media_url") and fact.get("media_url") != fact.get("url"):
+        message += f"\n🖼️ {fact['media_url']}"
 
     response = requests.post(
         webhook_url,
@@ -359,9 +230,9 @@ def send_to_discord(webhook_url: str, title: str, fact: str, wiki_url: str | Non
 def main() -> None:
     webhook_url = get_env("DISCORD_FACTS_WEBHOOK_URL")
 
-    title, fact, wiki_url = find_fact()
-    send_to_discord(webhook_url, title, fact, wiki_url)
-    save_sent_topic(title)
+    fact = find_fact()
+    send_to_discord(webhook_url, fact)
+    save_sent_id(fact["id"])
 
 
 if __name__ == "__main__":
