@@ -28,6 +28,7 @@ jobs:
       - run: python daily_mindblowing_fact_to_discord.py
         env:
           DISCORD_FACTS_WEBHOOK_URL: ${{ secrets.DISCORD_FACTS_WEBHOOK_URL }}
+          NASA_API_KEY: ${{ secrets.NASA_API_KEY }}
 
       - name: Save sent fact history
         if: always()
