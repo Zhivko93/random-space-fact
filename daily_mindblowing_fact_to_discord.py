@@ -106,6 +106,12 @@ def clean_text(text: str) -> str:
     return text
 
 
+def discord_position_text(text: str) -> str:
+    text = re.sub(r"\babove picture\b", "below picture", text, flags=re.IGNORECASE)
+    text = re.sub(r"\babove image\b", "below image", text, flags=re.IGNORECASE)
+    return text
+
+
 def split_sentences(text: str) -> list[str]:
     parts = re.split(r"(?<=[.!?])\s+", text)
     return [clean_text(part) for part in parts if clean_text(part)]
@@ -159,10 +165,10 @@ def best_fact_sentence(explanation: str) -> str:
         if 45 <= len(sentence) <= 320
     ]
     if not candidates:
-        return clean_text(explanation)[:300].rstrip()
+        return discord_position_text(clean_text(explanation)[:300].rstrip())
 
     candidates.sort(key=sentence_score, reverse=True)
-    return candidates[0]
+    return discord_position_text(candidates[0])
 
 
 def media_url(apod: dict) -> str | None:
@@ -206,7 +212,7 @@ def find_fact() -> dict:
 
 def send_to_discord(webhook_url: str, fact: dict) -> None:
     message = (
-        f"🌌 **Daily NASA space fact**\n\n"
+        f"🌌 **Daily NASA transmission for the boys**\n\n"
         f"{fact['fact']}\n\n"
         f"*Source: NASA APOD - {fact['title']}*"
     )
