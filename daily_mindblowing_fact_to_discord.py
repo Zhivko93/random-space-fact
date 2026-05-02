@@ -191,12 +191,12 @@ def find_fact() -> dict:
         if not apod:
             continue
 
+        selected_media_url = media_url(apod)
         return {
             "id": sent_id,
             "title": apod["title"],
             "fact": best_fact_sentence(apod["explanation"]),
-            "url": apod.get("url"),
-            "media_url": media_url(apod),
+            "url": selected_media_url or apod.get("url"),
             "date": apod_date,
         }
 
@@ -221,8 +221,6 @@ def send_to_discord(webhook_url: str, fact: dict) -> None:
         message += f"\n*APOD date: {fact['date']}*"
     if fact.get("url"):
         message += f"\n🔗 {fact['url']}"
-    if fact.get("media_url") and fact.get("media_url") != fact.get("url"):
-        message += f"\n🖼️ {fact['media_url']}"
 
     response = requests.post(
         webhook_url,
