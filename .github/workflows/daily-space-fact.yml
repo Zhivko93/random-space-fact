@@ -2,8 +2,8 @@ name: Daily Mind-Blowing Fact
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC. This is three hours earlier than the previous 07:00 UTC schedule.
-    - cron: "0 4 * * *"
+    # GitHub Actions cron uses UTC. Run weekly on Monday morning in Central Europe.
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
 permissions:
