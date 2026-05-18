@@ -212,7 +212,7 @@ def find_fact() -> dict:
 
 def send_to_discord(webhook_url: str, fact: dict) -> None:
     message = (
-        f"🌌 **Daily NASA transmission for the boys**\n\n"
+        f"🌌 **Weekly NASA transmission for the boys**\n\n"
         f"{fact['fact']}\n\n"
         f"*Source: NASA APOD - {fact['title']}*"
     )
